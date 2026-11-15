@@ -14,7 +14,7 @@ from .schemas import ApplicationInput, LoginInput
 from .services.predictor import predict, metadata
 from .services.scoring import score_result
 from .services.auth import hash_password, verify_password, create_token, get_user_id, revoke_token
-from .services.company_lookup import search_companies, get_company
+from .services.company_lookup import search_companies, get_company, catalogue_status
 
 ROOT=Path(__file__).resolve().parents[2]
 app=FastAPI(title='AI-Based MSME Credit Analyser',version='1.0.0')
@@ -85,9 +85,9 @@ def model_info(user: User=Depends(current_user)): return metadata()
 def demos(user: User=Depends(current_user)):
     p=ROOT/'data/sample/demo_cases.json'; return json.loads(p.read_text()) if p.exists() else []
 @app.get('/api/company-search')
-def company_search(q: str = '', user: User = Depends(current_user)):
-    """Search the curated public-company catalogue by company name or industry."""
-    return {"results": search_companies(q), "source": "Public-company profile catalogue"}
+def company_search(q: str = '', refresh: bool = False, user: User = Depends(current_user)):
+    """Search the NSE-listed equity universe by company name or symbol."""
+    return {"results": search_companies(q, refresh=refresh), **catalogue_status()}
 @app.get('/api/company-profile/{company_id}')
 def company_profile(company_id: str, user: User = Depends(current_user)):
     company = get_company(company_id)

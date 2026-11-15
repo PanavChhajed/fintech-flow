@@ -44,14 +44,14 @@ openApp = async function () {
   }
 };
 
-// Company-name lookup uses curated public-company profile snapshots. Private
-// banking and credit-bureau fields remain explicitly manual/consented.
+// Company-name lookup uses the NSE-listed equity universe. Private banking,
+// financial-statement and credit-bureau fields remain explicitly manual/consented.
 const _openCredLensWithDemo = openApp;
 openApp = async function () {
   await _openCredLensWithDemo();
   if (!document.querySelector('#companyLookup')) {
     const section = document.querySelector('#assessmentView .section-title');
-    section.insertAdjacentHTML('afterend', `<div id="companyLookup" class="form-section"><h3>Public company lookup</h3><p class="muted">Search a company to pre-fill available public-profile data. Bank balances, loans, repayment history and credit-bureau data stay manual.</p><div class="lookup-row"><input id="companyQuery" placeholder="Try Reliance, Tata Motors, Infosys, ITC or Apex Precision Manufacturing"><button class="primary" id="searchCompany" type="button">Search company</button></div><div id="companyMatches" class="lookup-results"></div></div>`);
+    section.insertAdjacentHTML('afterend', `<div id="companyLookup" class="form-section"><h3>NSE listed company lookup</h3><p class="muted">Search the NSE equity universe by company name or symbol. It fills listing identity only; bank, credit and financial fields stay manual and verified.</p><div class="lookup-row"><input id="companyQuery" placeholder="Try Reliance, Infosys, TCS, HDFCBANK or a listed-company symbol"><button class="primary" id="searchCompany" type="button">Search NSE companies</button></div><div id="companyMatches" class="lookup-results"></div></div>`);
   }
 };
 
@@ -63,7 +63,8 @@ document.addEventListener('click', async event => {
     if (!query) return toast('Type a company name to search.');
     try {
       const response = await api(`/api/company-search?q=${encodeURIComponent(query)}`);
-      $('#companyMatches').innerHTML = response.results.length ? response.results.map(item => `<button type="button" class="company-match" data-company-id="${item.id}"><b>${item.company_name}</b><span>${item.industry} · ${item.location}${item.symbol ? ` · ${item.symbol}` : ''}</span></button>`).join('') : '<p class="muted">No matching profile. Try Reliance, Tata Motors, Infosys, ITC or Apex Precision Manufacturing.</p>';
+      const status = response.degraded ? ' The live NSE list is temporarily unavailable; showing the offline fallback catalogue.' : ` ${response.count.toLocaleString()} listed securities available.`;
+      $('#companyMatches').innerHTML = response.results.length ? `<p class="muted">${response.source}.${status}</p>` + response.results.map(item => `<button type="button" class="company-match" data-company-id="${item.id}"><b>${item.company_name}</b><span>${item.symbol} · ${item.series} · NSE listed</span></button>`).join('') : `<p class="muted">No NSE-listed company matches this search.${status} Try a full company name or trading symbol.</p>`;
     } catch (error) { toast(error.message); }
   }
   if (companyOption) {

@@ -1,32 +1,68 @@
-"""Curated public-company lookup profiles used when live regulated sources are unavailable.
-
-The records mirror the shape of publicly disclosed listed-company information. They are
-explicitly labelled snapshots so the credit workflow never represents them as live bureau,
-banking, GST, or MCA data.
-"""
+"""Listed-company search backed by NSE's public equity master list."""
+from __future__ import annotations
+import csv, io, time
 from typing import Any
+from urllib.request import Request, urlopen
 
-COMPANIES: list[dict[str, Any]] = [
-    {"id":"apex-precision","company_name":"Apex Precision Manufacturing","industry":"Manufacturing","business_age":12,"location":"Pune, Maharashtra","employees":85,"ownership_type":"Private Limited","business_type":"B2B","revenue":42000000,"ebitda":7200000,"net_profit":3900000,"total_assets":35000000,"current_assets":15000000,"current_liabilities":7200000,"total_liabilities":14000000,"net_worth":21000000,"existing_debt":7500000,"annual_interest_expense":700000,"cash_balance":4200000,"accounts_receivable":3100000,"inventory":3500000,"accounts_payable":1900000,"existing_loans":7500000,"monthly_emi":120000,"previous_defaults":0,"credit_history_years":10,"active_loans":1,"credit_utilization":0.28,"payment_history":0.99,"avg_monthly_balance":2500000,"monthly_inflows":3900000,"monthly_outflows":3200000,"bounced_payments":0,"banking_relationship_years":9,"listed":False},
-    {"id":"reliance-industries","company_name":"Reliance Industries Limited","industry":"Diversified Energy & Retail","business_age":52,"location":"Mumbai, Maharashtra","employees":389000,"ownership_type":"Public Limited","business_type":"Diversified","revenue":1000000000000,"ebitda":175000000000,"net_profit":79000000000,"total_assets":1700000000000,"current_assets":370000000000,"current_liabilities":330000000000,"total_liabilities":920000000000,"net_worth":780000000000,"existing_debt":340000000000,"annual_interest_expense":23000000000,"cash_balance":145000000000,"accounts_receivable":78000000000,"inventory":115000000000,"accounts_payable":92000000000,"listed":True,"symbol":"RELIANCE"},
-    {"id":"tata-motors","company_name":"Tata Motors Limited","industry":"Automobile Manufacturing","business_age":80,"location":"Mumbai, Maharashtra","employees":95000,"ownership_type":"Public Limited","business_type":"B2C / B2B","revenue":440000000000,"ebitda":62000000000,"net_profit":28000000000,"total_assets":540000000000,"current_assets":135000000000,"current_liabilities":120000000000,"total_liabilities":330000000000,"net_worth":210000000000,"existing_debt":175000000000,"annual_interest_expense":17000000000,"cash_balance":41000000000,"accounts_receivable":46000000000,"inventory":52000000000,"accounts_payable":39000000000,"listed":True,"symbol":"TATAMOTORS"},
-    {"id":"infosys","company_name":"Infosys Limited","industry":"IT Services","business_age":44,"location":"Bengaluru, Karnataka","employees":317000,"ownership_type":"Public Limited","business_type":"B2B","revenue":165000000000,"ebitda":39000000000,"net_profit":26500000000,"total_assets":160000000000,"current_assets":92000000000,"current_liabilities":42000000000,"total_liabilities":53000000000,"net_worth":107000000000,"existing_debt":6000000000,"annual_interest_expense":400000000,"cash_balance":39000000000,"accounts_receivable":31000000000,"inventory":1000000000,"accounts_payable":14000000000,"listed":True,"symbol":"INFY"},
-    {"id":"itc","company_name":"ITC Limited","industry":"FMCG","business_age":115,"location":"Kolkata, West Bengal","employees":24000,"ownership_type":"Public Limited","business_type":"B2C","revenue":70000000000,"ebitda":25000000000,"net_profit":19000000000,"total_assets":98000000000,"current_assets":29000000000,"current_liabilities":21000000000,"total_liabilities":29000000000,"net_worth":69000000000,"existing_debt":2000000000,"annual_interest_expense":120000000,"cash_balance":15000000000,"accounts_receivable":7000000000,"inventory":10000000000,"accounts_payable":8000000000,"listed":True,"symbol":"ITC"},
+NSE_EQUITY_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+CACHE_TTL_SECONDS = 24 * 60 * 60
+MAX_RESULTS = 20
+FALLBACK_COMPANIES = [
+    {"symbol": "RELIANCE", "company_name": "Reliance Industries Limited", "series": "EQ", "isin": "INE002A01018"},
+    {"symbol": "TATAMOTORS", "company_name": "Tata Motors Limited", "series": "EQ", "isin": "INE155A01022"},
+    {"symbol": "INFY", "company_name": "Infosys Limited", "series": "EQ", "isin": "INE009A01021"},
+    {"symbol": "ITC", "company_name": "ITC Limited", "series": "EQ", "isin": "INE154A01025"},
 ]
+_catalogue: list[dict[str, str]] | None = None
+_catalogue_loaded_at = 0.0
+_catalogue_source = "NSE equity master list"
+_catalogue_error: str | None = None
+PUBLIC_NOTE = "Listing identity was sourced from the NSE equity master list. Only company name, symbol and listed status are pre-filled. Financial statements, bank balances, loans, repayment history, GST and credit-bureau fields must be verified and entered separately."
 
-PUBLIC_NOTE = "Curated public-company demonstration profile based on the kind of information found in listed-company disclosures. Verify live values from MCA/NSE/BSE filings before using in any real decision. Private banking, credit-bureau and GST data are not fetched."
+def _normalise(row: dict[str, str]) -> dict[str, str] | None:
+    row = {str(key).strip(): (value or "") for key, value in row.items()}
+    symbol, name = row.get("SYMBOL", "").strip().upper(), row.get("NAME OF COMPANY", "").strip()
+    series, isin = row.get("SERIES", "").strip().upper(), row.get("ISIN NUMBER", "").strip().upper()
+    if not symbol or not name or series in {"", "SM", "ST"}: return None
+    return {"symbol": symbol, "company_name": name, "series": series, "isin": isin}
 
-def search_companies(query: str) -> list[dict[str, Any]]:
-    query = query.strip().lower()
-    if not query: return []
-    return [{key: item.get(key) for key in ("id", "company_name", "industry", "location", "listed", "symbol")} for item in COMPANIES if query in item["company_name"].lower() or query in item["industry"].lower()][:8]
+def _download_catalogue() -> list[dict[str, str]]:
+    request = Request(NSE_EQUITY_MASTER_URL, headers={"User-Agent": "CredLens academic project contact: local-demo", "Accept": "text/csv,*/*;q=0.8"})
+    with urlopen(request, timeout=12) as response: payload = response.read().decode("utf-8-sig")
+    records = [item for row in csv.DictReader(io.StringIO(payload)) if (item := _normalise(row))]
+    if len(records) < 100: raise ValueError("NSE equity master list returned too few usable records")
+    return sorted(records, key=lambda item: (item["company_name"].casefold(), item["symbol"]))
+
+def _load_catalogue(force_refresh: bool = False) -> list[dict[str, str]]:
+    global _catalogue, _catalogue_loaded_at, _catalogue_source, _catalogue_error
+    if _catalogue is not None and time.time() - _catalogue_loaded_at < CACHE_TTL_SECONDS and not force_refresh: return _catalogue
+    try:
+        _catalogue, _catalogue_loaded_at = _download_catalogue(), time.time()
+        _catalogue_source, _catalogue_error = "NSE equity master list", None
+    except Exception as error:
+        if _catalogue is None: _catalogue = FALLBACK_COMPANIES.copy()
+        _catalogue_source, _catalogue_error = "Offline fallback catalogue", type(error).__name__
+    return _catalogue
+
+def catalogue_status() -> dict[str, Any]:
+    records = _load_catalogue()
+    return {"source": _catalogue_source, "count": len(records), "updated_at": int(_catalogue_loaded_at) if _catalogue_loaded_at else None, "degraded": _catalogue_source != "NSE equity master list", "error": _catalogue_error}
+
+def search_companies(query: str, refresh: bool = False) -> list[dict[str, Any]]:
+    query = query.strip().casefold()
+    if len(query) < 2: return []
+    tokens, matches = [token for token in query.split() if token], []
+    for item in _load_catalogue(force_refresh=refresh):
+        if all(token in f"{item['company_name']} {item['symbol']}".casefold() for token in tokens):
+            matches.append({"id": f"nse:{item['symbol']}", "company_name": item["company_name"], "symbol": item["symbol"], "series": item["series"], "isin": item["isin"], "industry": "Listed company", "location": "India", "listed": True})
+            if len(matches) >= MAX_RESULTS: break
+    return matches
 
 def get_company(company_id: str) -> dict[str, Any] | None:
-    for company in COMPANIES:
-        if company["id"] == company_id:
-            result = dict(company)
-            result["source"] = "Public-company profile catalogue"
-            result["source_note"] = PUBLIC_NOTE
-            return result
+    if not company_id.startswith("nse:"): return None
+    symbol = company_id.removeprefix("nse:").strip().upper()
+    for item in _load_catalogue():
+        if item["symbol"] == symbol:
+            return {"id": f"nse:{item['symbol']}", "company_name": item["company_name"], "industry": "Listed company", "location": "India", "ownership_type": "Public Limited", "business_type": "Listed company", "listed": True, "symbol": item["symbol"], "series": item["series"], "isin": item["isin"], "source": _catalogue_source, "source_note": PUBLIC_NOTE}
     return None
 
