@@ -74,8 +74,8 @@ document.addEventListener('click', async event => {
         const input = document.querySelector(`[name="${key}"]`);
         if (input && value !== undefined) input.value = value;
       });
-      $('#companyMatches').innerHTML = `<p class="lookup-note"><b>Profile loaded:</b> ${profile.source_note}</p>`;
-      toast(`${profile.company_name} loaded. Review the public profile, then add confidential banking data if available.`);
+      $('#companyMatches').innerHTML = `<p class="lookup-note"><b>Demo-ready profile loaded:</b> ${profile.source_note}</p>`;
+      toast(`${profile.company_name} is ready for AI analysis with synthetic ideal demo values.`);
     } catch (error) { toast(error.message); }
   }
 });
